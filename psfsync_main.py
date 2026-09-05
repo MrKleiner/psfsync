@@ -61,18 +61,24 @@ def await_file_ready(
 
 
 
-class PSFSyncFileMessage(NamedPrint):
+class PSFSyncMessage(NamedPrint):
 	DEBUG_NO_ACTION = False
 
-	def __init__(self, rel_path, action):
+	def __init__(self):
 		self.psfsync_con = None
+
+	def __call__(self, psfsync_con):
+		self.psfsync_con = psfsync_con
+
+
+
+class PSFSyncFileMessage(PSFSyncMessage):
+	def __init__(self, rel_path, action):
+		super().__init__()
 
 		self.rel_path = rel_path
 		self.action = action
 		self.fpath_type = None
-
-	def __call__(self, psfsync_con):
-		self.psfsync_con = psfsync_con
 
 	@property
 	def abspath(self):
@@ -155,6 +161,35 @@ class PSFSyncFileMessage(NamedPrint):
 
 
 
+class PSFSyncControlMessage(PSFSyncMessage):
+	def __init__(self, action):
+		super().__init__()
+		self.action = action
+
+	def read(self):
+		if self.action == 'wipe':
+			if isinstance(self.psfsync_con, PSFSyncSender):
+				raise ValueError(
+					f'FATAL: Action >{self.action}< '
+					'can only be accepted by a reader'
+				)
+
+			self.nprint('CTRL WIPE :', self.psfsync_con.root_dir)
+
+			if not self.DEBUG_NO_ACTION:
+				shutil.rmtree(
+					self.psfsync_con.root_dir,
+					ignore_errors=True,
+				)
+
+				self.psfsync_con.root_dir.mkdir(exist_ok=True)
+
+	def send(self):
+		# Control messages are header-only
+		self.psfsync_con.pspm_con.send_msg(self)
+
+
+
 class WatchdogEventHandler(FileSystemEventHandler, NamedPrint):
 	def __init__(self, task_sched, *args, **kwargs):
 		super().__init__(*args, **kwargs)
@@ -212,6 +247,7 @@ class PSFSyncSender(PSFSyncConnection):
 		remote_dir,
 		ignore=None,
 		immediate_tasks=None,
+		wipe=False,
 	):
 		self.pspm_con = pspm_con
 		self.root_dir = Path(local_dir)
@@ -222,6 +258,9 @@ class PSFSyncSender(PSFSyncConnection):
 
 		# Ignore patterns
 		self.ignore = tuple(ignore or ())
+
+		# Whether to wipe the remote folder on startup or not
+		self.wipe = wipe
 
 		# Schedule any immediate operations
 		for task in (immediate_tasks or ()):
@@ -248,6 +287,12 @@ class PSFSyncSender(PSFSyncConnection):
 		self.pspm_con.send_msg(
 			str(self.remote_dir)
 		)
+
+		# Wipe target remote dir, if needed
+		if self.wipe:
+			cmd = PSFSyncControlMessage('wipe')
+			cmd(self)
+			cmd.send()
 
 		# Create file observer
 		self.create_observer()
@@ -405,11 +450,6 @@ def main():
 				i for i in Path(args.local_root_dir).rglob('*')
 			)
 
-			# Schedule deletion
-			immediate_tasks.extend(
-				((p, 'delete') for p in path_array) 
-			)
-
 			# Schedule write
 			immediate_tasks.extend(
 				((p, 'write') for p in path_array) 
@@ -432,6 +472,7 @@ def main():
 					args.remote_root_dir,
 					ignore=ignore,
 					immediate_tasks=immediate_tasks,
+					wipe=(args.immediate_sync == '1'),
 				) as psfsync_client:
 					print('Connected to', addr)
 					psfsync_client.run()
