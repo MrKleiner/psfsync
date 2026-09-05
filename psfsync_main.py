@@ -202,6 +202,9 @@ class PSFSyncConnection(NamedPrint):
 
 
 class PSFSyncSender(PSFSyncConnection):
+	DEFAULT_DO_PING = True
+	DEFAULT_PING_INTERVAL_S = 3
+
 	def __init__(self,
 		pspm_con,
 		local_dir,
@@ -211,7 +214,7 @@ class PSFSyncSender(PSFSyncConnection):
 	):
 		self.pspm_con = pspm_con
 		self.root_dir = Path(local_dir)
-		self.remote_dir = Path(remote_dir)
+		self.remote_dir = remote_dir
 
 		self.task_sched = queue.Queue()
 		self.observer = None
@@ -241,14 +244,28 @@ class PSFSyncSender(PSFSyncConnection):
 
 	def run(self):
 		# First message is the remote root dir
-		self.pspm_con.send_msg(self.remote_dir)
+		self.pspm_con.send_msg(
+			str(self.remote_dir)
+		)
 
 		# Create file observer
 		self.create_observer()
 
 		# Send messages
 		while True:
-			abs_path, action = self.task_sched.get()
+			try:
+				abs_path, action = self.task_sched.get(
+					timeout=self.DEFAULT_PING_INTERVAL_S
+				)
+			except queue.Empty:
+				if self.DEFAULT_DO_PING:
+					ping_ok, ping_error = self.pspm_con.send_ping(timeout=5)
+					if ping_error:
+						raise ping_error
+					if not ping_ok:
+						return
+
+				continue
 
 			rel_path = (
 				Path(abs_path)
@@ -285,7 +302,7 @@ class PSFSyncReader(PSFSyncConnection):
 		try:
 			# First message from the sender dictates the root dir
 			self.root_dir = Path(self.pspm_con.read_msg())
-			self.nprint('Declared root dir:', self.nprint)
+			self.nprint('Declared root dir:', self.root_dir)
 
 			while True:
 					# Receive command
@@ -354,6 +371,8 @@ class PythonSimpleFileSync(NamedPrint):
 
 
 def main():
+	print('Python Simple File Sync initializing...')
+
 	args = argparse.ArgumentParser()
 	args.add_argument('-type')
 	args.add_argument('-addr')
@@ -371,6 +390,7 @@ def main():
 
 	if args.type == 'server':
 		with psfsync.server(addr) as psfsync_server:
+			print('Running server on', addr)
 			psfsync_server.run()
 
 	if args.type == 'client':
@@ -399,14 +419,20 @@ def main():
 
 				ignore.append(line)
 
-		with psfsync.sender(
-			addr,
-			args.local_root_dir,
-			args.remote_root_dir,
-			ignore=ignore,
-			immediate_tasks=immediate_tasks,
-		) as psfsync_client:
-			psfsync_client.run()
+		while True:
+			try:
+				with psfsync.sender(
+					addr,
+					args.local_root_dir,
+					args.remote_root_dir,
+					ignore=ignore,
+					immediate_tasks=immediate_tasks,
+				) as psfsync_client:
+					print('Connected to', addr)
+					psfsync_client.run()
+			except Exception as e:
+				print_exception_framed(e)
+				time.sleep(0.5)
 
 
 
