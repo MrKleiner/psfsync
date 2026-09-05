@@ -124,7 +124,7 @@ class PSPMShared(NamedPrint):
 	# The OTHER side has this many seconds
 	# to read the ping sent by THIS side
 	# before its connection is force terminated
-	DEFAULT_PING_TIMEOUT = 69.000
+	DEFAULT_PING_TIMEOUT = 6.9
 
 	# Auth is just a regular message, which consists of random bytes.
 	AUTH_MSG_LEN = 512
