@@ -14,6 +14,7 @@ from watchdog.events import FileSystemEventHandler
 
 
 from pspm.pyspm import PySecurePickleMessaging
+from pspm import pyspm_exceptions
 
 from jag.jag_util import (
 	print_exception_framed,
@@ -361,13 +362,6 @@ class PythonSimpleFileSync(NamedPrint):
 	@contextlib.contextmanager
 	def sender(self, tgt_addr, *args, **kwargs):
 		with PySecurePickleMessaging(self.key).sender(tgt_addr) as pspm_con:
-			ping_ok, ping_error = pspm_con.send_ping(timeout=6)
-			if not ping_ok or ping_error:
-				raise Exception(
-					f'PSFS post-connection ping failed: {ping_error}. '
-					'Wrong key is the most likely issue'
-				)
-
 			yield PSFSyncSender(
 				pspm_con,
 				*args,
@@ -441,6 +435,11 @@ def main():
 				) as psfsync_client:
 					print('Connected to', addr)
 					psfsync_client.run()
+			except pyspm_exceptions.AuthFail as e:
+				print(
+					f'FATAL: Auth failed ({e}). Wrong key is the most likely issue.'
+				)
+				time.sleep(0.75)
 			except Exception as e:
 				print_exception_framed(e)
 				time.sleep(0.75)

@@ -172,11 +172,17 @@ class PSPMShared(NamedPrint):
 	def send_ping(self, timeout=None):
 		try:
 			with self.skt_timeout(timeout or self.DEFAULT_PING_TIMEOUT):
+				ping_bytes = os.urandom(16)
 				self.send_chunk(
-					os.urandom(32),
+					ping_bytes,
 					is_last=True,
 					is_ping=True,
 				)
+
+				_, echo_ping_bytes = self.read_chunk()
+
+				if ping_bytes != echo_ping_bytes:
+					return (False, None)
 
 			return (True, None)
 		except Exception as e:
@@ -266,7 +272,11 @@ class PSPMShared(NamedPrint):
 			)
 
 			if is_ping:
-				self.read_body(payload_len, is_pickled)
+				self.send_chunk(
+					self.read_body(payload_len, is_pickled),
+					is_last=True,
+					is_ping=False,
+				)
 				continue
 			else:
 				break
@@ -488,6 +498,9 @@ class PySecurePickleMessaging(NamedPrint):
 
 		# If auth failed - the connection should be closed by now
 		ping_ok, ping_error = pspm_con.send_ping()
+
+		if isinstance(ping_error, CipherFailure):
+			raise AuthFail('Cipher failure')
 
 		if not ping_ok:
 			raise AuthFail(ping_error)
