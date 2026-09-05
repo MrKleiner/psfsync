@@ -361,7 +361,7 @@ class PythonSimpleFileSync(NamedPrint):
 	@contextlib.contextmanager
 	def sender(self, tgt_addr, *args, **kwargs):
 		with PySecurePickleMessaging(self.key).sender(tgt_addr) as pspm_con:
-			ping_ok, ping_error = pspm_con.ping(timeout=6)
+			ping_ok, ping_error = pspm_con.send_ping(timeout=6)
 			if not ping_ok or ping_error:
 				raise Exception(
 					f'PSFS post-connection ping failed: {ping_error}. '
