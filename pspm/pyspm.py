@@ -172,15 +172,17 @@ class PSPMShared(NamedPrint):
 	def send_ping(self, timeout=None):
 		try:
 			with self.skt_timeout(timeout or self.DEFAULT_PING_TIMEOUT):
-				self.skt_raw.sendall(
-					bools_to_bytes((True,))
+				self.send_chunk(
+					os.urandom(32),
+					is_last=True,
+					is_ping=True,
 				)
 
 			return (True, None)
 		except Exception as e:
 			return (False, e)
 
-	def send_chunk(self, msg_data, is_last=False, timeout=None,):
+	def send_chunk(self, msg_data, is_last=False, timeout=None, is_ping=False):
 		do_pickle = not isinstance(msg_data, bytes)
 		nonce = os.urandom(12)
 		main_payload = self.cipher.encrypt(
@@ -193,8 +195,8 @@ class PSPMShared(NamedPrint):
 			# Flags
 			self.skt_raw.sendall(
 				bools_to_bytes((
-					# Not ping
-					False,
+					# Whether it's a ping
+					is_ping,
 					# Whether it's the last message in the sequence
 					is_last,
 					# Whether the payload is pickled
@@ -254,18 +256,20 @@ class PSPMShared(NamedPrint):
 				aligned_recv(self.skt_raw, 1)
 			)
 
-			is_ping, is_last, *_ = msg_flags
+			# Unpack flags
+			is_ping, _, is_pickled, *_ = msg_flags
+
+			# Read the size of the payload
+			payload_len = int.from_bytes(
+				aligned_recv(self.skt_raw, 4),
+				'little'
+			)
 
 			if is_ping:
+				self.read_body(payload_len, is_pickled)
 				continue
 			else:
 				break
-
-		# Read the size of the payload
-		payload_len = int.from_bytes(
-			aligned_recv(self.skt_raw, 4),
-			'little'
-		)
 
 		return (
 			msg_flags[1:],
