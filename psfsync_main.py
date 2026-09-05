@@ -260,8 +260,10 @@ class PSFSyncSender(PSFSyncConnection):
 			except queue.Empty:
 				if self.DEFAULT_DO_PING:
 					ping_ok, ping_error = self.pspm_con.send_ping(timeout=5)
+
 					if ping_error:
 						raise ping_error
+
 					if not ping_ok:
 						return
 
@@ -300,7 +302,9 @@ class PSFSyncReader(PSFSyncConnection):
 
 	def run(self):
 		try:
-			# First message from the sender dictates the root dir
+			# First message from the sender dictates the root dir.
+			# The fact there's first message also means
+			# that the connection is immediately "pinged"
 			self.root_dir = Path(self.pspm_con.read_msg())
 			self.nprint('Declared root dir:', self.root_dir)
 
@@ -357,6 +361,13 @@ class PythonSimpleFileSync(NamedPrint):
 	@contextlib.contextmanager
 	def sender(self, tgt_addr, *args, **kwargs):
 		with PySecurePickleMessaging(self.key).sender(tgt_addr) as pspm_con:
+			ping_ok, ping_error = pspm_con.ping(timeout=6)
+			if not ping_ok or ping_error:
+				raise Exception(
+					f'PSFS post-connection ping failed: {ping_error}. '
+					'Wrong key is the most likely issue'
+				)
+
 			yield PSFSyncSender(
 				pspm_con,
 				*args,
@@ -432,7 +443,7 @@ def main():
 					psfsync_client.run()
 			except Exception as e:
 				print_exception_framed(e)
-				time.sleep(0.5)
+				time.sleep(0.75)
 
 
 
