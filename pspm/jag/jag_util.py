@@ -6,6 +6,7 @@ import threading
 import heapq
 import itertools
 import time
+import json
 
 try:
 	from xor_cipher import cyclic_xor
@@ -121,6 +122,29 @@ def calc_string_pad(line_array, extra=3):
 	pad += extra
 
 	return pad
+
+
+def pretty_print(tgt, max_line_width=None):
+	if not isinstance(tgt, (tuple, set, list, dict)):
+		print(tgt)
+		return
+
+	class JSONEncoder(json.JSONEncoder):
+		def default(self, obj):
+			try:
+				return super().default(obj)
+			except:
+				return f'{obj}'
+
+	lines = []
+	for line in json.dumps(tgt, cls=JSONEncoder, indent=' '*4).split('\n'):
+		lines.append(
+			line[0:max_line_width]
+		)
+
+	print('\n'.join(
+		frame_lines(lines)
+	))
 
 
 def clamp_num(num, tgt_min, tgt_max):
