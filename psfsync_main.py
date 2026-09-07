@@ -4,6 +4,9 @@ import time
 import shutil
 import argparse
 import queue
+import os
+import ast
+
 from fnmatch import fnmatch
 
 from pathlib import Path
@@ -61,6 +64,29 @@ def await_file_ready(
 
 
 
+class PSFSyncLinuxMask(NamedPrint):
+	def __init__(self, file_msg, chown=None, chmod=None):
+		self.file_msg = file_msg
+		self.chown = chown
+		self.chmod = chmod
+
+	def apply(self):
+		if self.chown:
+			self.nprint('LM   CHOWN:', self.file_msg.abspath)
+			if not self.file_msg.DEBUG_NO_ACTION:
+				os.system(
+					f'chown {self.chown} {self.file_msg.abspath}'
+				)
+
+		if self.chmod:
+			self.nprint('LM   CHMOD:', self.file_msg.abspath)
+			if not self.file_msg.DEBUG_NO_ACTION:
+				os.system(
+					f'chmod {self.chmod} {self.file_msg.abspath}'
+				)
+
+
+
 class PSFSyncMessage(NamedPrint):
 	DEBUG_NO_ACTION = False
 
@@ -73,12 +99,16 @@ class PSFSyncMessage(NamedPrint):
 
 
 class PSFSyncFileMessage(PSFSyncMessage):
-	def __init__(self, rel_path, action):
+	def __init__(self, rel_path, action, linux_mask=None):
 		super().__init__()
 
 		self.rel_path = rel_path
 		self.action = action
 		self.fpath_type = None
+
+		self.linux_mask = PSFSyncLinuxMask(
+			self, **(linux_mask or {})
+		)
 
 	@property
 	def abspath(self):
@@ -89,6 +119,10 @@ class PSFSyncFileMessage(PSFSyncMessage):
 		return self.abspath.is_relative_to(
 			self.psfsync_con.root_dir
 		)
+
+	def apply_linux_mask(self):
+		if self.linux_mask:
+			return self.linux_mask.apply()
 
 	def read(self):
 		if not self.abspath_valid:
@@ -113,6 +147,8 @@ class PSFSyncFileMessage(PSFSyncMessage):
 				self.nprint('DIR CREATE:', self.abspath)
 				if not self.DEBUG_NO_ACTION:
 					self.abspath.mkdir(exist_ok=True)
+
+			self.apply_linux_mask()
 			return
 
 		if self.fpath_type == 'file':
@@ -131,6 +167,8 @@ class PSFSyncFileMessage(PSFSyncMessage):
 				if not self.DEBUG_NO_ACTION:
 					self.abspath.parent.mkdir(exist_ok=True, parents=True)
 					self.abspath.touch()
+
+			self.apply_linux_mask()
 			return
 
 	def send(self):
@@ -162,9 +200,10 @@ class PSFSyncFileMessage(PSFSyncMessage):
 
 
 class PSFSyncControlMessage(PSFSyncMessage):
-	def __init__(self, action):
+	def __init__(self, action, prms=None):
 		super().__init__()
 		self.action = action
+		self.prms = prms
 
 	def read(self):
 		if self.action == 'wipe':
@@ -248,6 +287,7 @@ class PSFSyncSender(PSFSyncConnection):
 		ignore=None,
 		immediate_tasks=None,
 		wipe=False,
+		linux_mask=None
 	):
 		self.pspm_con = pspm_con
 		self.root_dir = Path(local_dir)
@@ -261,6 +301,9 @@ class PSFSyncSender(PSFSyncConnection):
 
 		# Whether to wipe the remote folder on startup or not
 		self.wipe = wipe
+
+		# Retarded Linux shit, such as chmod/chown
+		self.linux_mask = linux_mask
 
 		# Schedule any immediate operations
 		for task in (immediate_tasks or ()):
@@ -327,8 +370,15 @@ class PSFSyncSender(PSFSyncConnection):
 				if fnmatch('/' + rel_path, pattern):
 					break
 			else:
+				# Linux mask
+				linux_mask = {}
+				if self.linux_mask:
+					for pattern, directives in self.linux_mask.items():
+						if fnmatch('/' + rel_path, pattern):
+							linux_mask.update(directives)
+
 				# Create
-				cmd = PSFSyncFileMessage(rel_path, action)
+				cmd = PSFSyncFileMessage(rel_path, action, linux_mask)
 
 				# Set ownership to sender
 				cmd(self)
@@ -431,6 +481,7 @@ def main():
 	args.add_argument('-key')
 	args.add_argument('-immediate_sync')
 	args.add_argument('-ignore')
+	args.add_argument('-linux_mask')
 	args = args.parse_args()
 
 	psfsync = PythonSimpleFileSync(args.key.encode())
@@ -446,13 +497,9 @@ def main():
 	if args.type == 'client':
 		immediate_tasks = []
 		if args.immediate_sync == '1':
-			path_array = tuple(
-				i for i in Path(args.local_root_dir).rglob('*')
-			)
-
-			# Schedule write
 			immediate_tasks.extend(
-				((p, 'write') for p in path_array) 
+				(p, 'write') for p in
+				Path(args.local_root_dir).rglob('*')
 			)
 
 		ignore = []
@@ -464,6 +511,20 @@ def main():
 
 				ignore.append(line)
 
+		linux_mask = None
+		if args.linux_mask:
+			linux_mask_fpath = Path(args.linux_mask)
+			if linux_mask_fpath.is_file():
+				linux_mask = ast.literal_eval(
+					linux_mask_fpath.read_text('utf-8')
+				)
+			else:
+				print(
+					'Warning: Linux mask specified, but '
+					'the config file cannot be found'
+				)
+
+
 		while True:
 			try:
 				with psfsync.sender(
@@ -473,6 +534,7 @@ def main():
 					ignore=ignore,
 					immediate_tasks=immediate_tasks,
 					wipe=(args.immediate_sync == '1'),
+					linux_mask=linux_mask,
 				) as psfsync_client:
 					print('Connected to', addr)
 					psfsync_client.run()
