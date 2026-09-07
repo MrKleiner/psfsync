@@ -5,8 +5,15 @@ import io
 import contextlib
 import hashlib
 
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-import cryptography.exceptions as crypto_exceptions
+try:
+	from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+	import cryptography.exceptions as crypto_exceptions
+except ImportError:
+	ChaCha20Poly1305 = None
+
+	class crypto_exceptions:
+		class InvalidTag(Exception):
+			pass
 
 
 from .jag.jag_util import (
@@ -16,6 +23,7 @@ from .jag.jag_util import (
 	skt_timeout,
 	FasterTimerSched,
 	terminate_skt,
+	cyclic_xor,
 )
 
 from .pyspm_exceptions import *
@@ -93,6 +101,22 @@ class BootlegChallenge:
 		return digest.startswith('0' * self.DEFAULT_DIFFICULTY)
 
 
+class BootlegCipher:
+	def __init__(self, key):
+		print('WARNING: PSPM NOT USING CIPHER')
+		self.key = key
+
+	def encrypt(self, nonce_bytes, tgt_bytes, *args, **kwargs):
+		return cyclic_xor(
+			tgt_bytes,
+			nonce_bytes + self.key,
+		)
+
+	def decrypt(self, nonce_bytes, tgt_bytes, *args, **kwargs):
+		return cyclic_xor(
+			tgt_bytes,
+			nonce_bytes + self.key,
+		)
 
 
 
@@ -103,6 +127,9 @@ class BootlegChallenge:
 
 class PSPMShared(NamedPrint):
 	NPRINT_DISABLED = True
+
+	# Useful for testing when both sides are on the same machine
+	DISABLE_ENCRYPTION = False
 
 	# So basically, it can happen so that the unpickler tries
 	# importing a non-existing module...
@@ -137,12 +164,16 @@ class PSPMShared(NamedPrint):
 	# 0 - = Is ping
 	# 1 0 = Is last
 	# 2 1 = Is pickled
-	# 3 2 = Bootleg cipher
-	# 5 3 = -
-	# 6 4 = -
-	# 7 5 = -
+	# 3 2 = Is encryption disabled
+	# 4 3 = Do ping echo
+	# 5 4 = -
+	# 6 5 = -
+	# 7 6 = -
 
 	def __init__(self, skt_raw, key, alt_timer=None):
+		if self.DISABLE_ENCRYPTION:
+			print('WARNING: PSPM ENCRYPTION DISABLED')
+
 		# The raw socket object
 		self.skt_raw = skt_raw
 		# 32 bytes-long encryption key
@@ -150,7 +181,10 @@ class PSPMShared(NamedPrint):
 		# Replacement for threading.Timer
 		self.alt_timer = alt_timer
 		# Encryption object TM
-		self.cipher = ChaCha20Poly1305(self.key)
+		self.cipher = (
+			BootlegCipher(self.key) if self.DISABLE_ENCRYPTION
+			else ChaCha20Poly1305(self.key)
+		)
 		# Whether a stream is under way
 		self.streaming = False
 
@@ -169,26 +203,36 @@ class PSPMShared(NamedPrint):
 
 
 
-	def send_ping(self, timeout=None):
+	def send_ping(self, timeout=None, echo=True):
 		try:
 			with self.skt_timeout(timeout or self.DEFAULT_PING_TIMEOUT):
-				ping_bytes = os.urandom(16)
+				ping_bytes = os.urandom(16 + (16 * echo))
 				self.send_chunk(
 					ping_bytes,
 					is_last=True,
 					is_ping=True,
+					do_ping_echo=echo,
 				)
 
-				_, echo_ping_bytes = self.read_chunk()
+				if echo:
+					_, echo_ping_bytes = self.read_chunk()
 
-				if ping_bytes != echo_ping_bytes:
-					return (False, None)
+					if ping_bytes != echo_ping_bytes:
+						return (False, None)
 
 			return (True, None)
 		except Exception as e:
 			return (False, e)
 
-	def send_chunk(self, msg_data, is_last=False, timeout=None, is_ping=False):
+	def send_chunk(self,
+		msg_data,
+		timeout=None,
+
+		# Flags
+		is_ping=False,
+		is_last=False,
+		do_ping_echo=False,
+	):
 		do_pickle = not isinstance(msg_data, bytes)
 		nonce = os.urandom(12)
 		main_payload = self.cipher.encrypt(
@@ -207,6 +251,10 @@ class PSPMShared(NamedPrint):
 					is_last,
 					# Whether the payload is pickled
 					do_pickle,
+					# Whether this message was not encrypted
+					self.DISABLE_ENCRYPTION,
+					# Whether ping has to receive an echo
+					do_ping_echo,
 				))
 			)
 
@@ -263,7 +311,13 @@ class PSPMShared(NamedPrint):
 			)
 
 			# Unpack flags
-			is_ping, _, is_pickled, *_ = msg_flags
+			is_ping, _, is_pickled, is_encryption_disabled, do_ping_echo, *_ = msg_flags
+
+			if self.DISABLE_ENCRYPTION != is_encryption_disabled:
+				raise ValueError(
+					'FATAL: Incoming message was not encrypted, but '
+					'an encrypted message was expected'
+				)
 
 			# Read the size of the payload
 			payload_len = int.from_bytes(
@@ -272,11 +326,12 @@ class PSPMShared(NamedPrint):
 			)
 
 			if is_ping:
-				self.send_chunk(
-					self.read_body(payload_len, is_pickled),
-					is_last=True,
-					is_ping=False,
-				)
+				if do_ping_echo:
+					self.send_chunk(
+						self.read_body(payload_len, is_pickled),
+						is_last=True,
+						is_ping=False,
+					)
 				continue
 			else:
 				break
