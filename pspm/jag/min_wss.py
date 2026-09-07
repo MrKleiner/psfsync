@@ -6,46 +6,18 @@ import collections
 import json
 import socket
 
-try:
-	from xor_cipher import cyclic_xor
-	# print('WSS v2')
-except:
-	cyclic_xor = None
 
 from .jag_util import *
 
 
 
-class WSSMask:
+class WebSocketXORMask:
 	def __init__(self, mask_bytes):
 		self.bytes_static = mask_bytes
 		self.bytes = collections.deque(list(mask_bytes))
 
-		# todo: mention this in the manual
-		if cyclic_xor:
-			self.cyclic_xor = cyclic_xor
-			self.unmask =     self.unmask_xcipher
-		else:
-			self.cyclic_xor = None
-			self.unmask =     self.unmask_native
-
-	def unmask(self):
-		raise AttributeError(
-			'WSSMask.unmask was never initialized ???'
-		)
-
-	def unmask_native(self, data, mask):
-		bt_array = bytearray(data)
-		for idx in range(len(bt_array)):
-			bt_array[idx] ^= mask[idx % 4]
-
-		return bytes(bt_array)
-
-	def unmask_xcipher(self, data, mask):
-		return self.cyclic_xor(data, mask)
-
 	def apply(self, data):
-		xored = self.unmask(data, bytes(self.bytes))
+		xored = cyclic_xor(data, bytes(self.bytes))
 		self.bytes.rotate(len(data))
 		return xored
 
@@ -193,7 +165,9 @@ class MinWSession:
 				frame_len = self.eval_length(self.aligned_recv(8))
 
 			if masked:
-				wss_mask = WSSMask(self.aligned_recv(4))
+				wss_mask = WebSocketXORMask(
+					self.aligned_recv(4)
+				)
 
 			if masked:
 				msg_buf.write(

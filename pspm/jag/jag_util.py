@@ -7,6 +7,11 @@ import heapq
 import itertools
 import time
 
+try:
+	from xor_cipher import cyclic_xor
+except ImportError:
+	cyclic_xor = None
+
 
 RECV_BUF_FLOOR = 512
 
@@ -212,7 +217,13 @@ def skt_timeout(skt, timeout, skt_files=None, timer=None):
 		th_timer.cancel()
 
 
+if not cyclic_xor:
+	def cyclic_xor(data, mask):
+		bt_array = bytearray(data)
+		for idx in range(len(bt_array)):
+			bt_array[idx] ^= mask[idx % 4]
 
+		return bytes(bt_array)
 
 
 
